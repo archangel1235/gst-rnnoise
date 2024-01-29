@@ -17,3 +17,10 @@ $(OBJDIR)/$(PLUGIN_NAME).so: src/gstrnnoise.c
 clean:
 	rm -f $(OBJDIR)/$(PLUGIN_NAME).so
 
+install: $(OBJDIR)/$(PLUGIN_NAME).so
+	install -d $(DESTDIR)/usr/lib/x86_64-linux-gnu/gstreamer-1.0
+	install -m 755 $(OBJDIR)/$(PLUGIN_NAME).so $(DESTDIR)/usr/lib/x86_64-linux-gnu/gstreamer-1.0
+
+uninstall:
+	rm -f $(DESTDIR)/usr/lib/x86_64-linux-gnu/gstreamer-1.0/$(PLUGIN_NAME).so
+
