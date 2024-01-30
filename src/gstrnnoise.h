@@ -39,7 +39,10 @@ struct _GstRnnoise
   GstAudioFilter base_rnnoise;
   DenoiseState *st;
   GstAdapter *adapter;
+  float vad_threshold;
   GMutex mutex;
+  char *model_path;
+  RNNModel *model;
 };
 
 struct _GstRnnoiseClass
