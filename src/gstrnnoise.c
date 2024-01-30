@@ -64,10 +64,13 @@ static GstFlowReturn gst_rnnoise_transform (GstBaseTransform * trans,
     GstBuffer * inbuf, GstBuffer * outbuf);
 static GstFlowReturn gst_rnnoise_transform_ip (GstBaseTransform *trans,
      GstBuffer *buffer);
+static void rnnoise_model_init (GstRnnoise * this, FILE *fp);
 
 enum
 {
-  PROP_0
+  PROP_0,
+  PROP_VAD_THRESHOLD,
+  PROP_MODEL_PATH
 };
 
 /* pad templates */
@@ -95,10 +98,10 @@ static gboolean gst_transform_size(GstBaseTransform * trans,
     // Calculate the size of the output data based on the size of the input data
     if (direction == GST_PAD_SRC) {
       // If we're going from source to sink, multiply the size by 2
-      *othersize = size * 2;
+      *othersize = size * 4;
     } else {
       // If we're going from sink to source, divide the size by 2
-      *othersize = size * 2;
+      *othersize = size * 4;
     }
     return TRUE;
   }
@@ -143,6 +146,17 @@ gst_rnnoise_class_init (GstRnnoiseClass * klass)
 
   gobject_class->set_property = gst_rnnoise_set_property;
   gobject_class->get_property = gst_rnnoise_get_property;
+
+  g_object_class_install_property (gobject_class, PROP_VAD_THRESHOLD,
+      g_param_spec_float ("vad-thres", "VAD Threshold",
+          "Value for VAD threshold", 0, 1, 0,
+          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+
+  g_object_class_install_property (gobject_class, PROP_MODEL_PATH,
+      g_param_spec_string ("model-path", "Model Path",
+          "Path to RNNoise model", NULL,
+          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+
   gobject_class->dispose = gst_rnnoise_dispose;
   audio_filter_class->setup = GST_DEBUG_FUNCPTR (gst_rnnoise_setup);
   base_transform_class->transform_size = GST_DEBUG_FUNCPTR (gst_transform_size);
@@ -154,20 +168,75 @@ gst_rnnoise_class_init (GstRnnoiseClass * klass)
 static void
 gst_rnnoise_init (GstRnnoise * this)
 {
-  this->st = rnnoise_create(NULL);
+  FILE *fp = fopen(this->model_path, "rb");
+  if (fp == NULL && this->model_path != NULL) {
+    GST_ERROR("Invalid model path");
+  }
+  rnnoise_model_init(this, fp);
   this->adapter = gst_adapter_new();
   g_mutex_init (&this->mutex);
+  // close file pointer
+  if (fp != NULL) {
+    fclose(fp);
+  }
+}
+
+static void
+rnnoise_model_init (GstRnnoise * this, FILE *fp)
+{
+  if (fp == NULL){
+    GST_WARNING_OBJECT(this, "No model file provided");
+  }
+  // get mutex
+  g_mutex_lock (&this->mutex);
+  // clear the model if it exists
+  if (fp == NULL && this->st == NULL)
+  {
+    this->st = rnnoise_create(NULL);
+  }
+  else if (fp != NULL && this->st == NULL)
+  {
+    GST_INFO("Initializing RNNoise model %s", this->model_path);
+    this->model = rnnoise_model_from_file(fp);
+    this->st = rnnoise_create(this->model);
+  }
+  else if (fp != NULL && this->st != NULL)
+  {
+    GST_INFO("Initializing RNNoise model %s", this->model_path);
+    rnnoise_destroy(this->st);
+    rnnoise_model_free(this->model);
+    this->model = rnnoise_model_from_file(fp);
+    this->st = rnnoise_create(this->model);
+  }
+
+  g_mutex_unlock (&this->mutex);
 }
 
 void
 gst_rnnoise_set_property (GObject * object, guint property_id,
     const GValue * value, GParamSpec * pspec)
 {
-  GstRnnoise *rnnoise = GST_RNNOISE (object);
+  GstRnnoise *this = GST_RNNOISE (object);
 
-  GST_DEBUG_OBJECT (rnnoise, "set_property");
+  GST_DEBUG_OBJECT (this, "set_property");
 
   switch (property_id) {
+    case PROP_VAD_THRESHOLD:
+      this->vad_threshold = g_value_get_float (value);
+      break;
+    case PROP_MODEL_PATH:
+      this->model_path = g_value_dup_string(value);
+      GST_WARNING("Model file name is %s", this->model_path);
+      FILE *fp = fopen(this->model_path, "rb");
+      if (fp == NULL) {
+        GST_WARNING_OBJECT(this, "Invalid model path %s", this->model_path);
+        GST_WARNING_OBJECT(this, "Using default model");
+      }
+      rnnoise_model_init(this, fp);
+      if (fp != NULL) {
+        fclose(fp);
+      }
+      break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, property_id, pspec);
       break;
@@ -183,6 +252,12 @@ gst_rnnoise_get_property (GObject * object, guint property_id,
   GST_DEBUG_OBJECT (this, "get_property");
 
   switch (property_id) {
+    case PROP_VAD_THRESHOLD:
+      g_value_set_float (value, this->vad_threshold);
+      break;
+    case PROP_MODEL_PATH:
+      g_value_set_string(value, this->model_path);
+      break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, property_id, pspec);
       break;
@@ -205,6 +280,11 @@ gst_rnnoise_dispose (GObject * object)
   if (this->adapter) {
     g_object_unref(this->adapter);
     this->adapter = NULL;
+  }
+
+  if (this->model){
+    rnnoise_model_free(this->model);
+    this->model = NULL;
   }
 
   G_OBJECT_CLASS (gst_rnnoise_parent_class)->dispose (object);
@@ -283,6 +363,8 @@ gst_rnnoise_transform (GstBaseTransform * trans, GstBuffer * inbuf, GstBuffer * 
 
   guint position = 0;
 
+  float vad_prob = 0.0;
+
   // While there's enough data in the adapter to fill a chunk, process it
   while (gst_adapter_available(this->adapter) >= CHUNK_SIZE * sizeof(int16_t)) {
     // Pull a chunk from the adapter
@@ -300,7 +382,13 @@ gst_rnnoise_transform (GstBaseTransform * trans, GstBuffer * inbuf, GstBuffer * 
       x[i] = temp[i];
     }
 
-    rnnoise_process_frame(this->st, x, x);
+    vad_prob = rnnoise_process_frame(this->st, x, x);
+
+    if (vad_prob < this->vad_threshold) {
+      for (int i = 0; i < CHUNK_SIZE; i++) {
+        x[i] = 0;
+      }
+    }
 
     for (int i = 0; i < CHUNK_SIZE; i++) {
       temp[i] = x[i];
