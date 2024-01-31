@@ -34,7 +34,6 @@
 #include "config.h"
 #endif
 
-#define FRAME_SIZE_SHIFT 2
 #define FRAME_SIZE 480
 #define M_PI 3.141592654
 
@@ -353,22 +352,20 @@ gst_rnnoise_transform (GstBaseTransform * trans, GstBuffer * inbuf, GstBuffer * 
   // push the data into the adapter
   gst_adapter_push(this->adapter, gst_buffer_copy(inbuf));
   
-  guint CHUNK_SIZE = 480;
+  guint CHUNK_SIZE = FRAME_SIZE;
 
-  // get number of chunks available in the adapter
+  // get number of chunks available in the adapter this should be floor
   guint num_chunks = gst_adapter_available(this->adapter) / (CHUNK_SIZE * sizeof(int16_t));
 
   // resize the output buffer to fit the data
   gst_buffer_resize(outbuf, 0, num_chunks * CHUNK_SIZE * sizeof(int16_t));
 
-  guint position = 0;
-
   float vad_prob = 0.0;
 
   // While there's enough data in the adapter to fill a chunk, process it
-  while (gst_adapter_available(this->adapter) >= CHUNK_SIZE * sizeof(int16_t)) {
+  while (gst_adapter_available(this->adapter) >= CHUNK_SIZE * sizeof(int16_t) * num_chunks) {
     // Pull a chunk from the adapter
-    GstBuffer *chunk_buffer = gst_adapter_take_buffer(this->adapter, CHUNK_SIZE * sizeof(int16_t));
+    GstBuffer *chunk_buffer = gst_adapter_take_buffer(this->adapter, CHUNK_SIZE * sizeof(int16_t) * num_chunks);
     // Map the chunk buffer for efficient access
     GstMapInfo chunk_map_info;
     if (!gst_buffer_map(chunk_buffer, &chunk_map_info, GST_MAP_READWRITE)) {
@@ -378,33 +375,39 @@ gst_rnnoise_transform (GstBaseTransform * trans, GstBuffer * inbuf, GstBuffer * 
     
     int16_t *temp = (int16_t *) chunk_map_info.data;
     float x[CHUNK_SIZE];
-    for (int i = 0; i < CHUNK_SIZE; i++) {
-      x[i] = temp[i];
-    }
 
-    vad_prob = rnnoise_process_frame(this->st, x, x);
 
-    if (vad_prob < this->vad_threshold) {
-      for (int i = 0; i < CHUNK_SIZE; i++) {
-        x[i] = 0;
+    for (int i = 0; i < num_chunks; i++){
+
+      for (int j = 0; j < CHUNK_SIZE; j++) {
+        x[j] = temp[i*CHUNK_SIZE + j];
+      }
+
+      vad_prob = rnnoise_process_frame(this->st, x, x);
+
+      if (vad_prob < this->vad_threshold) {
+        for (int j = 0; j < CHUNK_SIZE; j++) {
+          x[j] = 0;
+        }
+      }
+
+      for (int j = 0; j < CHUNK_SIZE; j++) {
+        temp[i*CHUNK_SIZE + j] = x[j];
       }
     }
 
-    for (int i = 0; i < CHUNK_SIZE; i++) {
-      temp[i] = x[i];
-    }
-
-    // push the data to sink
-    gst_buffer_fill(outbuf, position, chunk_map_info.data, CHUNK_SIZE*sizeof(int16_t));
+    //gst_buffer_fill(outbuf, position, chunk_map_info.data, CHUNK_SIZE*sizeof(int16_t));
+    gst_buffer_fill(outbuf, 0, chunk_map_info.data, CHUNK_SIZE * sizeof(int16_t) * num_chunks);
     
     // Unmap the chunk buffer
     gst_buffer_unmap(chunk_buffer, &chunk_map_info);
 
+    // copy chunk_buffer to outbuf with all metadata
+    gst_buffer_copy_into(outbuf, chunk_buffer, \
+    GST_BUFFER_COPY_TIMESTAMPS|GST_BUFFER_COPY_FLAGS|GST_BUFFER_COPY_META, 0, -1);
+
     // Free the chunk buffer
     gst_buffer_unref(chunk_buffer);
-
-    // Increment the position in the output buffer
-    position += CHUNK_SIZE * sizeof(int16_t);
   }
 
   return GST_FLOW_OK;
