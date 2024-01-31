@@ -3,7 +3,7 @@
 
 # copy shared libraries to /usr/lib
 
-sudo cp -r binaries/arm64/lib/ /usr/lib
+sudo cp -r binaries/arm64/lib/* /usr/lib
 
 # copy header files to /usr/include create folder if not exist
 
