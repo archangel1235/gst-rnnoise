@@ -1,0 +1,31 @@
+# Example Usage
+
+## read audio from file do some processing and write to file
+
+``` bash
+gst-launch-1.0 filesrc location=input/audio_raw.wav ! wavparse ! audioconvert ! audioresample ! 'audio/x-raw,format=S16LE,channels=1,rate=48000' ! rnnoise ! wavenc ! filesink location=output/output.wav
+```
+
+## read audio from microphone do some processing and write to file
+
+``` bash
+gst-launch-1.0 alsasrc device=mic_compute provide-clock=false buffer-time=300000 blocksize=131072 ! audio/x-raw,rate=48000,channels=1 ! rnnoise ! wavenc ! filesink location=audio.wav
+```
+
+## read video from file do some processing on audio and send it to autoaudiosink
+
+``` bash
+gst-launch-1.0 filesrc location=video.mp4   ! qtdemux name=demux  demux.audio_0   ! queue ! decodebin ! audioconvert ! audioresample ! 'audio/x-raw,format=S16LE,channels=1,rate=48000' ! rnnoise ! autoaudiosink  demux.video_0   ! queue ! decodebin ! videoconvert ! videoscale ! autovideosink
+```
+
+## Check for latency
+
+``` bash
+GST_DEBUG="GST_TRACER:7" GST_DEBUG_FILE=latency.log GST_TRACERS="latency(flags=pipeline+element+reported)" \
+{pipeline}
+```
+
+``` bash
+GST_DEBUG="GST_TRACER:7" GST_DEBUG_FILE=latency.log GST_TRACERS="latency(flags=pipeline+element+reported)" \
+gst-launch-1.0 alsasrc device=mic_compute provide-clock=false buffer-time=300000 blocksize=131072 ! audio/x-raw,rate=48000,channels=1 ! rnnoise ! wavenc ! filesink location=audio.wav
+```
