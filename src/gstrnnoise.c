@@ -195,7 +195,7 @@ rnnoise_model_init (GstRnnoise * this, FILE *fp)
   }
   else if (fp != NULL && this->st == NULL)
   {
-    GST_INFO("Initializing RNNoise model %s", this->model_path);
+    GST_INFO("Initializing RNNoise model first Time %s", this->model_path);
     this->model = rnnoise_model_from_file(fp);
     this->st = rnnoise_create(this->model);
   }
@@ -203,8 +203,12 @@ rnnoise_model_init (GstRnnoise * this, FILE *fp)
   {
     GST_INFO("Initializing RNNoise model %s", this->model_path);
     rnnoise_destroy(this->st);
-    rnnoise_model_free(this->model);
+    if (this->model != NULL) 
+      rnnoise_model_free(this->model);
     this->model = rnnoise_model_from_file(fp);
+    if (this->model == NULL) {
+      GST_WARNING("Model is NULL");
+    }
     this->st = rnnoise_create(this->model);
   }
 
@@ -359,6 +363,11 @@ gst_rnnoise_transform (GstBaseTransform * trans, GstBuffer * inbuf, GstBuffer * 
 
   // resize the output buffer to fit the data
   gst_buffer_resize(outbuf, 0, num_chunks * CHUNK_SIZE * sizeof(int16_t));
+
+  // check if the adapter has enough data to process
+  if (num_chunks <= 0) {
+    return GST_FLOW_OK;
+  }
 
   float vad_prob = 0.0;
 
